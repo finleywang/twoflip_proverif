@@ -1,0 +1,163 @@
+ (* ProVerif for 2FLIP *)
+param traceDisplay = long.
+(* channels for publishing key and private communication *)
+free c_pub.
+private free c_UseriInputForReg.	(* private channel from Useri to TDi in reg *)
+private free c_UseriInputForRun.	(* private channel from Useri to TDi in run *)
+private free c_UserjInputForReg.	(* private channel from Userj to TDj in reg *)
+private free c_UserjInputForRun.	(* private channel from Userj to TDj in run *)
+private free c_Reg2CA.				(* private channel from TDs to CA in reg *)
+private free c_CA2TD.				(* private channel from CA to TD in reg *)
+private free c_CA2TPD.				(* private channel from CA to TPD in reg *)
+private free c_ViTD2TPD.			(* private channel from TDi to TPDi *)
+private free c_VjTD2TPD.			(* private channel from TDj to TPDj *)
+
+(* Active adversary *)
+param attacker = active.
+
+(* Params in registration phase for vehicle i and j *)
+data ID_CA/0.	(* identity of CA*)
+data info_i/0.	(* registration information of Vehicle i*)
+data info_j/0.	(* registration information of Vehicle j*)
+data PID_i/0.	(* pesudo identity of Vehicle i*)
+data PID_j/0.	(* pesudo identity of Vehicle j*)
+data TDID_i/0.	(* identity of portable telematics device of Vehicle i*)
+data TDID_j/0.	(* identity of portable telematics device of Vehicle j*)
+data true/0.	(* true value*)
+
+
+fun h/1.
+fun XOR/2.
+fun Enc/2.
+fun Dec/2.
+fun MAC/2.
+fun Consume/1.
+fun GenPubKey/2.
+fun Sign/2.
+fun Verify/3.
+
+equation Dec(k, Enc(k,m)) = m.
+equation Verify(k, m, Sign(m,k)) = true.
+equation XOR(m1,m2) = XOR(m2, m1).
+reduc DXOR(XOR(m1,m2),m2) = m1.
+reduc DMAC(km,MAC(km,m))=m.
+
+(* Test whether attacker can pass V2V authentication
+query ev:endAuthTD(x1,x2,x3) ==> ev:beginAuthTD(x1,x2,x3).
+(* Test whether attacker can pass TD 2 TPD authentication
+query ev:endAuthV2V(x4,x5,x6) ==> ev:beginAuthV2V(x4,x5,x6).
+(* Test whether attacker can acquire ID_i, ID_j, pw_iu, pw_ju 
+query attacker: (ID_i, ID_j, pw_iu, pw_ju, sigma_i).*)
+
+
+(* Process for CA *)
+let p_CA = new alpha;
+			let S_ID_CA = h(ID_CA) in
+			let kp = GenPubKey(alpha,S_ID_CA) in
+			new km;
+			new ts_km;
+			out(c_pub,S_ID_CA);
+
+			(* Registration for Veihcle i*)
+			in(c_Reg2CA, reg_info_i);
+			let (ID_i,gamma_iu,info_i) = reg_info_i in
+			let mu_iu = XOR(h((ID_i,TDID_i,PID_i)),h((TDID_i,km))) in
+			let eta_i = XOR(h((ID_i,gamma_iu,PID_i)),h((TDID_i,km))) in
+			let alpha_iu = h(XOR(gamma_iu,PID_i)) in
+			let beta_iu= XOR(PID_i,h((TDID_i,gamma_iu))) in
+
+			(* Registration for Veihcle j*)
+			in(c_Reg2CA, reg_info_j);
+			let (ID_j,gamma_ju,info_j) = reg_info_j in
+			let mu_j = XOR(h((ID_j,TDID_j,PID_j)),h((TDID_j,km))) in
+			let eta_j = XOR(h((ID_j,gamma_ju,PID_j)),h((TDID_j,km))) in
+			let alpha_ju = h(XOR(gamma_ju,PID_j)) in
+			let beta_ju= XOR(PID_j,h((TDID_j,gamma_ju))) in
+
+			(* configure TDi and TPDi*)
+			out(c_CA2TD,(TDID_i,ID_i,mu_iu,alpha_iu,beta_iu));
+			out(c_CA2TPD,(PID_i,km,mu_iu,ts_km,beta_iu));
+
+			(* configure TDj and TPDj*)
+			out(c_CA2TD,(TDID_j,ID_j,mu_j,alpha_ju,beta_ju));
+			out(c_CA2TPD,(PID_j,km,mu_j,ts_km,beta_ju)).
+
+(* Process for User i *)
+let p_Useri = new pw_iu;
+			out(c_UseriInputForReg,pw_iu);  (* Input password for registration from User i *)
+			(*-------------end of registration-------------*)
+			out(c_UseriInputForRun,pw_iu).	(* Input password for run from User i *)
+
+(* Process for User j *)
+let p_Userj = new pw_ju;
+			out(c_UserjInputForReg,pw_ju); 	(* Input password for registration from User j *)
+			(*-------------end of registration-------------*)
+			out(c_UserjInputForRun,pw_ju).	(* Input password for run from User j *)
+			(*-------------end of login TDi-------------*)
+
+
+(* Process for Telematics Device of Vehicle i *)
+let p_TDi = new ID_i;
+			in(c_UseriInputForReg,pw_iu);
+			let gamma_iu = h(pw_iu) in
+			out(c_Reg2CA,(ID_i,gamma_iu,info_i));
+			in(c_CA2TD,reg_td_i);
+			let (TDID_i,ID_i,mu_iu,alpha_iu,beta_iu) = reg_td_i in
+			(*-------------end of registration-------------*)
+			in(c_UseriInputForRun,pw_iu');
+			let gamma_iu' = h(pw_iu') in
+			let PID_i' = XOR (beta_iu, h((TDID_i,gamma_iu'))) in
+			let alpha_iu' = h(XOR(gamma_iu',PID_i')) in
+			if alpha_iu' = alpha_iu then (* password verification *)
+			(*-------------end of login TD -------------*)	
+
+				new ts;
+				let PID_i_ts = XOR(h((ID_i,TDID_i,PID_i)), h((PID_i,ts))) in
+				let epsilon_i = h((eta_i,PID_i,ts)) in
+				event beginAuthTD(PID_i_ts, epsilon_i, ts);(*query begin for TD 2 TPD authentication*)
+				out(ViTD2TPD,(PID_i_ts, epsilon_i, ts)).
+			(*-------------end of trying logining TPD-------------*)	
+
+(* Process for Tamper Proof Device of Vehicle i *)
+let p_TPDi = in(c_CA2TPD, reg_tpd_i);
+			let (PID_i,km,mu_iu,ts_km,beta_iu) = reg_tpd_i in
+			(*-------------end of registration-------------*)
+			in(c_ViTD2TPD, loginInfo_i);
+			let (PID_i_ts, epsilon_i, ts) = loginInfo_i in
+			let chi_i = DXOR(PID_i_ts, h((PID_i,ts))) in
+			let epsilon_i'= h((XOR(chi_i,h((TDID_i,km))),PID_i,ts)) in
+			if epsilon_i' = epsilon_i then
+			(*-------------end of verification login message-------------*)
+				new m;
+				let sigma_i = MAC(km,(PID_i_ts,h((m,km)),ts)) in
+				event endAuthTD(PID_i_ts, epsilon_i, ts);(*query end for TD 2 TPD authentication*)
+				event beginAuthV2V(PID_i_ts, sigma_i, ts);(*query begin for V2V authentication*)
+				out(c_pub, (PID_i_ts,sigma_i,ts,m)). 
+				(*out(c_pub, (choice[PID_i_ts,r0],sigma_i,ts,m)). *)
+			(*-------------end of login TPD and broadcast messages-------------*)
+
+(* Process for Telematics Device of Vehicle j *)
+let p_TDj = new ID_j;
+			in(c_UserjInputForReg,pw_ju);
+			let gamma_ju = h(pw_ju) in
+			out(c_Reg2CA,(ID_j,gamma_ju,info_j));
+			in(c_CA2TD,reg_td_j);
+			let (TDID_j,ID_j,mu_j,alpha_ju,beta_ju) = reg_td_j in 0.
+			(*-------------end of registration-------------*)
+
+(* Process for Tamper Proof Device of Vehicle j *)
+let p_TPDj = in(c_CA2TPD, reg_tpd_j);
+			let (PID_j,km,mu_j,ts_km,beta_ju) = reg_tpd_j in
+			(*-------------end of registration-------------*)
+			in(c_pub, message_i);
+			let (PID_i_ts,sigma_i,ts,m) = message_i in
+			let sigma_i' = MAC(km, (PID_i_ts, h((m, km)), ts)) in
+			if sigma_i'= sigma_i then
+				out(c_pub, (PID_i_ts,sigma_i,ts,m));
+			event endAuthV2V(PID_i_ts, sigma_i, ts).(*query end for V2V authentication*)
+			(*-------------end of authentication-------------*)
+
+(* The Processes *)
+process 
+new r0;
+!(p_Useri | p_Userj | p_CA | p_TDi | p_TDj | p_TPDi | p_TPDj)

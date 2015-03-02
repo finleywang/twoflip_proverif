@@ -1,0 +1,132 @@
+ (* ProVerif for 2FLIP *)
+param traceDisplay = long.
+(* channels for publishing key and private communication *)
+free c_pub.
+private free c_UseriInputForReg.	(* private channel from Useri to TDi in reg *)
+private free c_UseriInputForRun.	(* private channel from Useri to TDi in run *)
+private free c_Reg2CA.				(* private channel from TDs to CA in reg *)
+private free c_CA2TD.				(* private channel from CA to TD in reg *)
+private free c_CA2TPD.				(* private channel from CA to TPD in reg *)
+private free c_ViTD2TPD.			(* private channel from TDi to TPDi *)
+
+
+(* Passive adversary *)
+param attacker = active.
+
+(* Params in registration phase for vehicle i *)
+data ID_CA/0.	(* identity of CA*)
+data info_i/0.	(* registration information of Vehicle i*)
+data PID_i/0.	(* pesudo identity of Vehicle i*)
+data TDID_i/0.	(* identity of portable telematics device of Vehicle i*)
+data true/0.	(* true value*)
+data notifySystemKeyUpdate/0. (* message for notifying system key update *)
+
+
+fun h/1.
+fun XOR/2.
+fun Enc/2.
+fun Dec/2.
+fun MAC/2.
+fun Consume/1.
+fun GenPubKey/2.
+fun Sign/2.
+fun Verify/3.
+
+equation Dec(k, Enc(k,m)) = m.
+equation Verify(k, m, Sign(m,k)) = true.
+
+(* equation XOR(m1,m2) = XOR(m2,m1). *)
+
+equation XOR(m1,m2) = XOR(m2, m1).
+reduc DXOR(XOR(m1,m2),m2) = m1.
+reduc DMAC(km,MAC(km,m)) = m.
+
+
+(* Test whether attacker can acquire ID_i *)
+query attacker: (ID_i, pw_iu, km, km').
+
+(* Process for CA *)
+let p_CA = new alpha;
+			let S_ID_CA = h(ID_CA) in
+			let kp = GenPubKey(alpha,S_ID_CA) in
+			new km;
+			new ts_km;
+			out(c_pub,S_ID_CA);
+
+			(* Registration for Veihcle i*)
+			in(c_Reg2CA, reg_info_i);
+			let (ID_i,gamma_iu,info_i) = reg_info_i in
+			let mu_iu = XOR(h((ID_i,TDID_i,PID_i)),h((TDID_i,km))) in
+			let eta_i = XOR(h((ID_i,gamma_iu,PID_i)),h((TDID_i,km))) in
+			let alpha_iu = h(XOR(gamma_iu,PID_i)) in
+			let beta_iu = XOR(PID_i,h((TDID_i,gamma_iu))) in
+
+			(* configure TDi and TPDi*)
+			out(c_CA2TD,(TDID_i,ID_i,mu_iu,alpha_iu,beta_iu));
+			out(c_CA2TPD,(PID_i,km,mu_iu,ts_km,beta_iu));
+
+			(* System Key Update *)
+			new km';
+			new ts_km';
+			let cipher = Enc(km, (ts_km', ID_CA, km')) in
+			let sg = Sign(S_ID_CA, cipher) in
+			out(c_pub, (cipher, sg)).
+
+
+(* Process for User i *)
+let p_Useri = new pw_iu;
+			out(c_UseriInputForReg,pw_iu);  (* Input password for registration from User i *)
+			(*-------------end of registration-------------*)
+			out(c_UseriInputForRun,pw_iu).	(* Input password for run from User i *)
+
+(* Process for Telematics Device of Vehicle i *)
+let p_TDi = new ID_i;
+			in(c_UseriInputForReg,pw_iu);
+			let gamma_iu = h(pw_iu) in
+			out(c_Reg2CA,(ID_i,gamma_iu,info_i));
+			in(c_CA2TD,reg_td_i);
+			let (TDID_i,ID_i,mu_iu,alpha_iu,beta_iu) = reg_td_i in
+			(*-------------end of registration-------------*)
+			in(c_ViTD2TPD, =notifySystemKeyUpdate); (* being notified of system key update*)
+			in(c_UseriInputForRun,pw_iu');
+			let gamma_iu' = h(pw_iu') in
+			let PID_i' = XOR (beta_iu, h((TDID_i,gamma_iu'))) in
+			let alpha_iu' = h(XOR(gamma_iu',PID_i')) in
+			if alpha_iu' = alpha_iu then (* password verification *)
+			(*-------------end of login TD -------------*)	
+				new ts;
+				let PID_i_ts = XOR(h((ID_i,TDID_i,PID_i)), h((PID_i,ts))) in
+				let epsilon_i = h((eta_i,PID_i,ts)) in
+				out(ViTD2TPD,(PID_i_ts, epsilon_i, ts));	
+			(*-------------end of trying logining TPD-------------*)			
+			in(c_ViTD2TPD, eta_i');
+			let eta_i = eta_i' in 0.
+			(*-------------end of system key update -------------*)	
+
+
+(* Process for Tamper Proof Device of Vehicle i *)
+let p_TPDi = in(c_CA2TPD, reg_tpd_i);
+			let (PID_i,km,mu_iu,ts_km,beta_iu) = reg_tpd_i in
+			(*-------------end of registration-------------*)
+			in(c_pub, (cipher, sg));
+			let plaintext = Dec(km, c) in
+			let (ts_key', ID_CA_STAR, km') = plaintext in
+			if ID_CA = ID_CA_STAR then
+				let isVerified = Verify(ID_CA, cipher, sg) in
+			if isVerified = true then
+			out(c_ViTD2TPD, notifySystemKeyUpdate);
+			(*-------------end of key verification and notifying TDi-------------*)
+			in(c_ViTD2TPD, loginInfo_i);
+			let (PID_i_ts, epsilon_i, ts) = loginInfo_i in
+			let chi_i = DXOR(PID_i_ts, h((PID_i,ts))) in
+			let epsilon_i'= h((XOR(chi_i,h((TDID_i,km))),PID_i,ts)) in
+			if epsilon_i' = epsilon_i then
+			(*-------------end of verification login message-------------*)
+				let eta_i' = XOR(chi_i, h((TD_ID_i, km'))) in
+				let km = km' in
+				let ts_key = ts_key' in
+			out(c_ViTD2TPD, eta_i').
+			(*-------------end of system key update----------*)
+
+(* The Processes *)
+process (p_Useri | p_CA | p_TDi | p_TPDi )
